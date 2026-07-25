@@ -1,7 +1,7 @@
 #!/bin/zsh
 # speak — control CLI for claude-speak
 set -u
-ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+ROOT="${0:A:h:h}"  # resolve symlinks (CLI is symlinked into ~/.local/bin)
 CFG="$HOME/.claude-speak/config.json"
 PORT=$(python3 -c "import json;print(json.load(open('$CFG')).get('port',7865))" 2>/dev/null || echo 7865)
 BASE="http://127.0.0.1:$PORT"
