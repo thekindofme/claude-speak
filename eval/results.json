@@ -1,0 +1,534 @@
+{
+  "kokoro-pytorch": {
+    "warm_load_s": 11.57,
+    "n_voices": 18,
+    "rows": [
+      {
+        "id": "short_ack",
+        "text": "Done. All tests pass.",
+        "wav": "samples/eval/kokoro-pytorch__short_ack.wav",
+        "latency_s": 0.565,
+        "first_chunk_s": 0.562,
+        "audio_s": 2.15,
+        "rtf": 0.263,
+        "wer": 0.0,
+        "transcript": "Done, all tests pass.",
+        "utmos": 4.459
+      },
+      {
+        "id": "technical",
+        "text": "The Stop hook posts the final assistant message to a local daemon on port eight seven six five.",
+        "wav": "samples/eval/kokoro-pytorch__technical.wav",
+        "latency_s": 1.578,
+        "first_chunk_s": 1.577,
+        "audio_s": 6.3,
+        "rtf": 0.25,
+        "wer": 0.067,
+        "transcript": "The stop hook posts the final assistant message to a local demon on port 8765.",
+        "utmos": 4.524
+      },
+      {
+        "id": "numbers",
+        "text": "Latency dropped from twelve hundred milliseconds to eighty five milliseconds, a ninety three percent improvement.",
+        "wav": "samples/eval/kokoro-pytorch__numbers.wav",
+        "latency_s": 1.511,
+        "first_chunk_s": 1.509,
+        "audio_s": 7.42,
+        "rtf": 0.204,
+        "wer": 0.0,
+        "transcript": "Latency dropped from 1200 milliseconds to 85 milliseconds, a 93% improvement.",
+        "utmos": 4.534
+      },
+      {
+        "id": "code_speech",
+        "text": "Rename get user by id to fetch user, then update the three call sites.",
+        "wav": "samples/eval/kokoro-pytorch__code_speech.wav",
+        "latency_s": 0.981,
+        "first_chunk_s": 0.979,
+        "audio_s": 4.9,
+        "rtf": 0.2,
+        "wer": 0.0,
+        "transcript": "Rename get user by id to fetch user, then update the three call sites.",
+        "utmos": 4.514
+      },
+      {
+        "id": "brainstorm",
+        "text": "Here is another angle. Instead of polling the queue, we could push events over a web socket, which removes the latency floor entirely. The tradeoff is connection management, but a heartbeat every thirty seconds keeps it honest.",
+        "wav": "samples/eval/kokoro-pytorch__brainstorm.wav",
+        "latency_s": 2.327,
+        "first_chunk_s": 2.324,
+        "audio_s": 14.12,
+        "rtf": 0.165,
+        "wer": 0.108,
+        "transcript": "Here is another angle. Instead of polling the queue, we could push events over a websocket, which removes the latency floor entirely. The trade-off is connection management, but a heartbeat every 30 seconds keeps it honest.",
+        "utmos": 4.534
+      },
+      {
+        "id": "punctuation",
+        "text": "Wait, really? Yes: retries, backoff, and jitter; all three matter.",
+        "wav": "samples/eval/kokoro-pytorch__punctuation.wav",
+        "latency_s": 0.895,
+        "first_chunk_s": 0.893,
+        "audio_s": 4.88,
+        "rtf": 0.184,
+        "wer": 0.2,
+        "transcript": "Wait, really? Yes, retries, back off, and jitter. All three matter.",
+        "utmos": 4.531
+      },
+      {
+        "id": "acronyms",
+        "text": "The API returns JSON over HTTP, and the CLI caches OAuth tokens in SQLite.",
+        "wav": "samples/eval/kokoro-pytorch__acronyms.wav",
+        "latency_s": 1.517,
+        "first_chunk_s": 1.515,
+        "audio_s": 7.42,
+        "rtf": 0.204,
+        "wer": 0.0,
+        "transcript": "The API returns JSON over HTTP, and the CLI caches OAuth tokens in SQLite.",
+        "utmos": 4.528
+      },
+      {
+        "id": "hard_words",
+        "text": "Kubernetes orchestration with idempotent retries and deterministic serialization.",
+        "wav": "samples/eval/kokoro-pytorch__hard_words.wav",
+        "latency_s": 1.07,
+        "first_chunk_s": 1.068,
+        "audio_s": 6.28,
+        "rtf": 0.171,
+        "wer": 0.0,
+        "transcript": "Kubernetes orchestration with idempotent retries and deterministic serialization.",
+        "utmos": 4.537
+      },
+      {
+        "id": "question",
+        "text": "Should we go with the MLX build, or stick with PyTorch for now?",
+        "wav": "samples/eval/kokoro-pytorch__question.wav",
+        "latency_s": 0.751,
+        "first_chunk_s": 0.749,
+        "audio_s": 4.08,
+        "rtf": 0.184,
+        "wer": 0.0,
+        "transcript": "Should we go with the MLX build, or stick with PyTorch for now?",
+        "utmos": 4.494
+      },
+      {
+        "id": "homographs",
+        "text": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "wav": "samples/eval/kokoro-pytorch__homographs.wav",
+        "latency_s": 1.138,
+        "first_chunk_s": 1.136,
+        "audio_s": 5.62,
+        "rtf": 0.202,
+        "wer": 0.0,
+        "transcript": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "utmos": 4.52
+      }
+    ],
+    "aggregate": {
+      "mean_latency_s": 1.233,
+      "mean_first_chunk_s": 1.231,
+      "mean_rtf": 0.203,
+      "mean_wer": 0.0375,
+      "mean_utmos": 4.518
+    }
+  },
+  "kokoro-mlx": {
+    "warm_load_s": 7.03,
+    "n_voices": 18,
+    "rows": [
+      {
+        "id": "short_ack",
+        "text": "Done. All tests pass.",
+        "wav": "samples/eval/kokoro-mlx__short_ack.wav",
+        "latency_s": 0.108,
+        "first_chunk_s": 0.098,
+        "audio_s": 2.15,
+        "rtf": 0.05,
+        "wer": 0.0,
+        "transcript": "Done, all tests pass.",
+        "utmos": 4.445
+      },
+      {
+        "id": "technical",
+        "text": "The Stop hook posts the final assistant message to a local daemon on port eight seven six five.",
+        "wav": "samples/eval/kokoro-mlx__technical.wav",
+        "latency_s": 0.265,
+        "first_chunk_s": 0.249,
+        "audio_s": 6.3,
+        "rtf": 0.042,
+        "wer": 0.0,
+        "transcript": "The stop hook posts the final assistant message to a local daemon on port 8765.",
+        "utmos": 4.521
+      },
+      {
+        "id": "numbers",
+        "text": "Latency dropped from twelve hundred milliseconds to eighty five milliseconds, a ninety three percent improvement.",
+        "wav": "samples/eval/kokoro-mlx__numbers.wav",
+        "latency_s": 0.3,
+        "first_chunk_s": 0.284,
+        "audio_s": 7.42,
+        "rtf": 0.04,
+        "wer": 0.0,
+        "transcript": "Latency dropped from 1200 milliseconds to 85 milliseconds, a 93% improvement.",
+        "utmos": 4.527
+      },
+      {
+        "id": "code_speech",
+        "text": "Rename get user by id to fetch user, then update the three call sites.",
+        "wav": "samples/eval/kokoro-mlx__code_speech.wav",
+        "latency_s": 0.201,
+        "first_chunk_s": 0.188,
+        "audio_s": 4.88,
+        "rtf": 0.041,
+        "wer": 0.5,
+        "transcript": "Rename getuserbyid2fetchuser, then update the three call sites.",
+        "utmos": 4.502
+      },
+      {
+        "id": "brainstorm",
+        "text": "Here is another angle. Instead of polling the queue, we could push events over a web socket, which removes the latency floor entirely. The tradeoff is connection management, but a heartbeat every thirty seconds keeps it honest.",
+        "wav": "samples/eval/kokoro-mlx__brainstorm.wav",
+        "latency_s": 0.552,
+        "first_chunk_s": 0.533,
+        "audio_s": 14.15,
+        "rtf": 0.039,
+        "wer": 0.054,
+        "transcript": "Here is another angle. Instead of polling the queue, we could push events over a web socket, which removes the latency floor entirely. The trade-off is connection management, but a heartbeat every 30 seconds keeps it honest.",
+        "utmos": 4.529
+      },
+      {
+        "id": "punctuation",
+        "text": "Wait, really? Yes: retries, backoff, and jitter; all three matter.",
+        "wav": "samples/eval/kokoro-mlx__punctuation.wav",
+        "latency_s": 0.205,
+        "first_chunk_s": 0.189,
+        "audio_s": 4.88,
+        "rtf": 0.042,
+        "wer": 0.2,
+        "transcript": "Wait, really? Yes, retries, back off, and jitter. All three matter.",
+        "utmos": 4.514
+      },
+      {
+        "id": "acronyms",
+        "text": "The API returns JSON over HTTP, and the CLI caches OAuth tokens in SQLite.",
+        "wav": "samples/eval/kokoro-mlx__acronyms.wav",
+        "latency_s": 0.298,
+        "first_chunk_s": 0.282,
+        "audio_s": 7.42,
+        "rtf": 0.04,
+        "wer": 0.0,
+        "transcript": "The API returns JSON over HTTP, and the CLI caches OAuth tokens in SQLite.",
+        "utmos": 4.53
+      },
+      {
+        "id": "hard_words",
+        "text": "Kubernetes orchestration with idempotent retries and deterministic serialization.",
+        "wav": "samples/eval/kokoro-mlx__hard_words.wav",
+        "latency_s": 0.251,
+        "first_chunk_s": 0.236,
+        "audio_s": 6.28,
+        "rtf": 0.04,
+        "wer": 0.0,
+        "transcript": "Kubernetes orchestration with idempotent retries and deterministic serialization.",
+        "utmos": 4.533
+      },
+      {
+        "id": "question",
+        "text": "Should we go with the MLX build, or stick with PyTorch for now?",
+        "wav": "samples/eval/kokoro-mlx__question.wav",
+        "latency_s": 0.184,
+        "first_chunk_s": 0.17,
+        "audio_s": 4.08,
+        "rtf": 0.045,
+        "wer": 0.0,
+        "transcript": "Should we go with the MLX build, or stick with PyTorch for now?",
+        "utmos": 4.488
+      },
+      {
+        "id": "homographs",
+        "text": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "wav": "samples/eval/kokoro-mlx__homographs.wav",
+        "latency_s": 0.253,
+        "first_chunk_s": 0.238,
+        "audio_s": 5.62,
+        "rtf": 0.045,
+        "wer": 0.0,
+        "transcript": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "utmos": 4.504
+      }
+    ],
+    "aggregate": {
+      "mean_latency_s": 0.262,
+      "mean_first_chunk_s": 0.247,
+      "mean_rtf": 0.042,
+      "mean_wer": 0.0754,
+      "mean_utmos": 4.509
+    }
+  },
+  "piper": {
+    "warm_load_s": 0.79,
+    "n_voices": 5,
+    "rows": [
+      {
+        "id": "short_ack",
+        "text": "Done. All tests pass.",
+        "wav": "samples/eval/piper__short_ack.wav",
+        "latency_s": 0.121,
+        "first_chunk_s": 0.024,
+        "audio_s": 1.95,
+        "rtf": 0.062,
+        "wer": 0.0,
+        "transcript": "Done. All tests pass.",
+        "utmos": 4.034
+      },
+      {
+        "id": "technical",
+        "text": "The Stop hook posts the final assistant message to a local daemon on port eight seven six five.",
+        "wav": "samples/eval/piper__technical.wav",
+        "latency_s": 0.222,
+        "first_chunk_s": 0.221,
+        "audio_s": 5.29,
+        "rtf": 0.042,
+        "wer": 0.0,
+        "transcript": "The stop hook posts the final assistant message to a local daemon on port 8765.",
+        "utmos": 4.433
+      },
+      {
+        "id": "numbers",
+        "text": "Latency dropped from twelve hundred milliseconds to eighty five milliseconds, a ninety three percent improvement.",
+        "wav": "samples/eval/piper__numbers.wav",
+        "latency_s": 0.115,
+        "first_chunk_s": 0.115,
+        "audio_s": 6.03,
+        "rtf": 0.019,
+        "wer": 0.0,
+        "transcript": "Latency dropped from 1200 milliseconds to 85 milliseconds, a 93% improvement.",
+        "utmos": 4.457
+      },
+      {
+        "id": "code_speech",
+        "text": "Rename get user by id to fetch user, then update the three call sites.",
+        "wav": "samples/eval/piper__code_speech.wav",
+        "latency_s": 0.089,
+        "first_chunk_s": 0.088,
+        "audio_s": 4.47,
+        "rtf": 0.02,
+        "wer": 0.0,
+        "transcript": "Rename get user by ID to fetch user, then update the three call sites.",
+        "utmos": 4.478
+      },
+      {
+        "id": "brainstorm",
+        "text": "Here is another angle. Instead of polling the queue, we could push events over a web socket, which removes the latency floor entirely. The tradeoff is connection management, but a heartbeat every thirty seconds keeps it honest.",
+        "wav": "samples/eval/piper__brainstorm.wav",
+        "latency_s": 0.524,
+        "first_chunk_s": 0.081,
+        "audio_s": 12.04,
+        "rtf": 0.044,
+        "wer": 0.054,
+        "transcript": "Here is another angle. Instead of polling the queue, we could push events over a web socket, which removes the latency floor entirely. The trade-off is connection management, but a heartbeat every 30 seconds keeps it honest.",
+        "utmos": 4.363
+      },
+      {
+        "id": "punctuation",
+        "text": "Wait, really? Yes: retries, backoff, and jitter; all three matter.",
+        "wav": "samples/eval/piper__punctuation.wav",
+        "latency_s": 0.305,
+        "first_chunk_s": 0.095,
+        "audio_s": 4.76,
+        "rtf": 0.064,
+        "wer": 0.2,
+        "transcript": "Wait, really? Yes, retries, back off, and jitter. All three matter.",
+        "utmos": 4.496
+      },
+      {
+        "id": "acronyms",
+        "text": "The API returns JSON over HTTP, and the CLI caches OAuth tokens in SQLite.",
+        "wav": "samples/eval/piper__acronyms.wav",
+        "latency_s": 0.44,
+        "first_chunk_s": 0.44,
+        "audio_s": 5.69,
+        "rtf": 0.077,
+        "wer": 0.0,
+        "transcript": "The API returns JSON over HTTP and the CLI caches OAuth tokens in SQLite.",
+        "utmos": 4.488
+      },
+      {
+        "id": "hard_words",
+        "text": "Kubernetes orchestration with idempotent retries and deterministic serialization.",
+        "wav": "samples/eval/piper__hard_words.wav",
+        "latency_s": 0.132,
+        "first_chunk_s": 0.132,
+        "audio_s": 4.84,
+        "rtf": 0.027,
+        "wer": 0.25,
+        "transcript": "Kubernetes orchestration with ite potent retries and deterministic serialization.",
+        "utmos": 4.165
+      },
+      {
+        "id": "question",
+        "text": "Should we go with the MLX build, or stick with PyTorch for now?",
+        "wav": "samples/eval/piper__question.wav",
+        "latency_s": 0.073,
+        "first_chunk_s": 0.073,
+        "audio_s": 3.73,
+        "rtf": 0.02,
+        "wer": 0.0,
+        "transcript": "Should we go with the MLX build or stick with PyTorch for now?",
+        "utmos": 4.43
+      },
+      {
+        "id": "homographs",
+        "text": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "wav": "samples/eval/piper__homographs.wav",
+        "latency_s": 0.239,
+        "first_chunk_s": 0.229,
+        "audio_s": 4.89,
+        "rtf": 0.049,
+        "wer": 0.0,
+        "transcript": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "utmos": 4.389
+      }
+    ],
+    "aggregate": {
+      "mean_latency_s": 0.226,
+      "mean_first_chunk_s": 0.15,
+      "mean_rtf": 0.042,
+      "mean_wer": 0.0504,
+      "mean_utmos": 4.373
+    }
+  },
+  "macos-say": {
+    "warm_load_s": 0.0,
+    "n_voices": 27,
+    "rows": [
+      {
+        "id": "short_ack",
+        "text": "Done. All tests pass.",
+        "wav": "samples/eval/macos-say__short_ack.wav",
+        "latency_s": 0.843,
+        "first_chunk_s": 0.843,
+        "audio_s": 1.7,
+        "rtf": 0.496,
+        "wer": 0.0,
+        "transcript": "Done. All tests pass.",
+        "utmos": 3.732
+      },
+      {
+        "id": "technical",
+        "text": "The Stop hook posts the final assistant message to a local daemon on port eight seven six five.",
+        "wav": "samples/eval/macos-say__technical.wav",
+        "latency_s": 0.894,
+        "first_chunk_s": 0.894,
+        "audio_s": 5.2,
+        "rtf": 0.172,
+        "wer": 0.067,
+        "transcript": "The stop hook posts the final assistant message to a local demon on port 8765.",
+        "utmos": 3.864
+      },
+      {
+        "id": "numbers",
+        "text": "Latency dropped from twelve hundred milliseconds to eighty five milliseconds, a ninety three percent improvement.",
+        "wav": "samples/eval/macos-say__numbers.wav",
+        "latency_s": 0.805,
+        "first_chunk_s": 0.805,
+        "audio_s": 6.1,
+        "rtf": 0.132,
+        "wer": 0.0,
+        "transcript": "Latency dropped from 1200 milliseconds to 85 milliseconds. A 93% improvement.",
+        "utmos": 4.109
+      },
+      {
+        "id": "code_speech",
+        "text": "Rename get user by id to fetch user, then update the three call sites.",
+        "wav": "samples/eval/macos-say__code_speech.wav",
+        "latency_s": 0.816,
+        "first_chunk_s": 0.816,
+        "audio_s": 4.13,
+        "rtf": 0.198,
+        "wer": 0.071,
+        "transcript": "Rename get user by i to fetch user, then update the three call sites.",
+        "utmos": 4.035
+      },
+      {
+        "id": "brainstorm",
+        "text": "Here is another angle. Instead of polling the queue, we could push events over a web socket, which removes the latency floor entirely. The tradeoff is connection management, but a heartbeat every thirty seconds keeps it honest.",
+        "wav": "samples/eval/macos-say__brainstorm.wav",
+        "latency_s": 1.02,
+        "first_chunk_s": 1.02,
+        "audio_s": 12.52,
+        "rtf": 0.081,
+        "wer": 0.081,
+        "transcript": "Here is another angle. Instead of pulling the queue, we could push events over a web socket, which removes the latency floor entirely. The trade-off is connection management, but a heartbeat every 30 seconds keeps it honest.",
+        "utmos": 3.978
+      },
+      {
+        "id": "punctuation",
+        "text": "Wait, really? Yes: retries, backoff, and jitter; all three matter.",
+        "wav": "samples/eval/macos-say__punctuation.wav",
+        "latency_s": 0.807,
+        "first_chunk_s": 0.807,
+        "audio_s": 5.18,
+        "rtf": 0.156,
+        "wer": 0.2,
+        "transcript": "Wait. Really? Yes. Retries. Back off. And jitter. All three matter.",
+        "utmos": 4.379
+      },
+      {
+        "id": "acronyms",
+        "text": "The API returns JSON over HTTP, and the CLI caches OAuth tokens in SQLite.",
+        "wav": "samples/eval/macos-say__acronyms.wav",
+        "latency_s": 0.908,
+        "first_chunk_s": 0.908,
+        "audio_s": 5.73,
+        "rtf": 0.158,
+        "wer": 0.0,
+        "transcript": "The API returns JSON over HTTP, and the CLI caches OAuth tokens in SQLite.",
+        "utmos": 3.574
+      },
+      {
+        "id": "hard_words",
+        "text": "Kubernetes orchestration with idempotent retries and deterministic serialization.",
+        "wav": "samples/eval/macos-say__hard_words.wav",
+        "latency_s": 0.87,
+        "first_chunk_s": 0.87,
+        "audio_s": 4.57,
+        "rtf": 0.19,
+        "wer": 0.0,
+        "transcript": "Kubernetes orchestration with idempotent retries and deterministic serialization.",
+        "utmos": 4.14
+      },
+      {
+        "id": "question",
+        "text": "Should we go with the MLX build, or stick with PyTorch for now?",
+        "wav": "samples/eval/macos-say__question.wav",
+        "latency_s": 0.881,
+        "first_chunk_s": 0.881,
+        "audio_s": 3.84,
+        "rtf": 0.229,
+        "wer": 0.0,
+        "transcript": "Should we go with the MLX build, or stick with PyTorch for now?",
+        "utmos": 3.933
+      },
+      {
+        "id": "homographs",
+        "text": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "wav": "samples/eval/macos-say__homographs.wav",
+        "latency_s": 0.967,
+        "first_chunk_s": 0.967,
+        "audio_s": 4.63,
+        "rtf": 0.209,
+        "wer": 0.0,
+        "transcript": "I read the docs yesterday, and now I will read them again before we record a new record.",
+        "utmos": 3.939
+      }
+    ],
+    "aggregate": {
+      "mean_latency_s": 0.881,
+      "mean_first_chunk_s": 0.881,
+      "mean_rtf": 0.202,
+      "mean_wer": 0.0419,
+      "mean_utmos": 3.968
+    }
+  }
+}

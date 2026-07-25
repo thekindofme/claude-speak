@@ -1,0 +1,71 @@
+#!/bin/zsh
+# speak — control CLI for claude-speak
+set -u
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+CFG="$HOME/.claude-speak/config.json"
+PORT=$(python3 -c "import json;print(json.load(open('$CFG')).get('port',7865))" 2>/dev/null || echo 7865)
+BASE="http://127.0.0.1:$PORT"
+
+api() { curl -s --max-time 5 "$@"; }
+
+cfg_set() {  # cfg_set key json-value  (updates file AND live daemon)
+  python3 - "$1" "$2" <<'EOF'
+import json, sys, pathlib
+p = pathlib.Path.home() / ".claude-speak/config.json"
+cfg = json.loads(p.read_text()) if p.exists() else {}
+cfg[sys.argv[1]] = json.loads(sys.argv[2])
+p.parent.mkdir(exist_ok=True)
+p.write_text(json.dumps(cfg, indent=2) + "\n")
+EOF
+  api -X POST "$BASE/config" -d "{\"$1\": $2}" >/dev/null 2>&1 || true
+}
+
+ensure_daemon() {
+  if ! api "$BASE/status" >/dev/null 2>&1; then
+    echo "starting speakd..."
+    mkdir -p "$HOME/.claude-speak"
+    nohup "$ROOT/.venv/bin/python" "$ROOT/daemon/speakd.py" \
+      >> "$HOME/.claude-speak/speakd.out" 2>&1 &
+    for i in {1..40}; do
+      api "$BASE/status" >/dev/null 2>&1 && break
+      sleep 0.5
+    done
+  fi
+}
+
+case "${1:-status}" in
+  on)      cfg_set enabled true; ensure_daemon; echo "voice replies ON" ;;
+  off)     cfg_set enabled false; api -X POST "$BASE/stop" >/dev/null 2>&1; echo "voice replies OFF" ;;
+  stop)    api -X POST "$BASE/stop" >/dev/null; echo "stopped" ;;
+  status)  api "$BASE/status" | python3 -m json.tool 2>/dev/null || echo "speakd not running (speak on to start)" ;;
+  voices)  ensure_daemon; api "$BASE/voices" | python3 -c "import json,sys; [print(v) for v in json.load(sys.stdin)['voices']]" ;;
+  voice)   [ -z "${2:-}" ] && { echo "usage: speak voice <name>"; exit 1; }
+           cfg_set voice "\"$2\""; echo "voice -> $2" ;;
+  speed)   [ -z "${2:-}" ] && { echo "usage: speak speed <0.8-1.3>"; exit 1; }
+           cfg_set speed "$2"; echo "speed -> $2" ;;
+  mode)    case "${2:-}" in
+             full|summary|auto) cfg_set mode "\"$2\""; echo "mode -> $2" ;;
+             *) echo "usage: speak mode full|summary|auto"; exit 1 ;;
+           esac ;;
+  engine)  [ -z "${2:-}" ] && { echo "usage: speak engine <kokoro-mlx|kokoro-pytorch|piper|macos-say>"; exit 1; }
+           cfg_set engine "\"$2\""; echo "engine -> $2 (loads on next speak)" ;;
+  say)     shift; ensure_daemon
+           python3 -c "import json,sys,urllib.request; urllib.request.urlopen(urllib.request.Request('$BASE/speak', data=json.dumps({'text':' '.join(sys.argv[1:])}).encode(), headers={'Content-Type':'application/json'}))" "$@"
+           echo "queued" ;;
+  restart) pkill -f "daemon/speakd.py" 2>/dev/null; sleep 0.5; ensure_daemon; echo "restarted" ;;
+  log)     tail -n "${2:-30}" "$HOME/.claude-speak/speakd.log" ;;
+  doctor)  echo "root: $ROOT"; echo "config: $(cat $CFG 2>/dev/null || echo MISSING)"
+           api "$BASE/status" >/dev/null 2>&1 && echo "daemon: UP" || echo "daemon: DOWN"
+           "$ROOT/.venv/bin/python" -c "import sys; sys.path.insert(0,'$ROOT/engines'); import adapters; print('adapters: OK')" ;;
+  *) cat <<USAGE
+speak — Claude Code voice replies
+  speak on|off          enable / disable voice replies
+  speak status          daemon status
+  speak stop            interrupt current speech
+  speak voice <name>    set voice        speak voices   list voices
+  speak speed <x>       0.8–1.3          speak mode full|summary|auto
+  speak engine <name>   switch TTS engine
+  speak say <text...>   test speech      speak restart | log | doctor
+USAGE
+  ;;
+esac

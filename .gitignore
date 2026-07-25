@@ -1,0 +1,6 @@
+.venv/
+samples/
+__pycache__/
+*.log
+nohup.out
+install.log
