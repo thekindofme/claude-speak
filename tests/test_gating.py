@@ -32,3 +32,11 @@ def test_fresh_daemon_interactive_fallback():
 def test_fresh_daemon_blocks_headless():
     ok, reason = should_speak(None, {"session_id": "abc", "interactive": False})
     assert not ok and reason == "not-interactive"
+
+
+def test_cmux_focus_no_env(monkeypatch):
+    sys.path.insert(0, str(ROOT / "hooks"))
+    import claude_speak_hook as h
+    monkeypatch.delenv("CMUX_PANEL_ID", raising=False)
+    in_cmux, focused = h.cmux_focus()
+    assert (in_cmux, focused) == (False, False)

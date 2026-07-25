@@ -8,6 +8,7 @@ Usage:
 """
 
 import json
+import os
 import subprocess
 import sys
 import tempfile
@@ -54,12 +55,38 @@ def hlog(msg: str):
         pass
 
 
-def is_interactive() -> bool:
-    """True when this hook runs under a session with a controlling terminal.
+def cmux_bin() -> str | None:
+    b = os.environ.get("CMUX_CLAUDE_HOOK_CMUX_BIN") or os.environ.get("CMUX_BUNDLED_CLI_PATH")
+    if b and Path(b).exists():
+        return b
+    return None
 
-    Headless runs (`claude -p` from launchd/cron, CI) have no /dev/tty, so
-    their replies are never spoken.
+
+def cmux_focus() -> tuple[bool, bool]:
+    """(in_cmux, this session's surface is the focused one)."""
+    b = cmux_bin()
+    if not b or not os.environ.get("CMUX_PANEL_ID"):
+        return False, False
+    try:
+        r = subprocess.run([b, "identify"], capture_output=True, text=True, timeout=3)
+        j = json.loads(r.stdout)
+        caller = (j.get("caller") or {}).get("surface_ref")
+        focused = (j.get("focused") or {}).get("surface_ref")
+        return True, bool(caller) and caller == focused
+    except Exception:
+        return True, False
+
+
+def is_interactive() -> bool:
+    """True when this session is one a human is looking at / typing in.
+
+    cmux/tasuki sessions: true only when this session's surface is focused.
+    Plain terminal: controlling tty present. Headless (`claude -p` from
+    launchd/cron): neither, never spoken.
     """
+    in_cmux, focused = cmux_focus()
+    if in_cmux:
+        return focused
     try:
         with open("/dev/tty"):
             return True
@@ -108,9 +135,10 @@ def cmd_stop_hook():
         return
     if data.get("stop_hook_active"):
         return
-    tty = is_interactive()
-    hlog(f"stop sid={data.get('session_id','')[:12]} tty={tty}")
-    if not tty:
+    inter = is_interactive()
+    hlog(f"stop sid={data.get('session_id','')[:12]} interactive={inter} "
+         f"cmux={bool(os.environ.get('CMUX_PANEL_ID'))}")
+    if not inter:
         return  # never voice headless/background sessions
     text = last_assistant_text(data.get("transcript_path", ""))
     if not text.strip():
