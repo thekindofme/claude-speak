@@ -169,9 +169,36 @@ class MacSay:
         return [l.split()[0] for l in out.splitlines() if " en_" in l or " en-" in l]
 
 
+class Null:
+    """Silent engine: real timing shape, no audio. For tests and dry runs."""
+
+    name = "null"
+    default_voice = "silent"
+
+    def __init__(self, voice: str | None = None):
+        self.voice = voice or self.default_voice
+
+    def load(self):
+        pass
+
+    def synthesize(self, text: str, out_wav: str, speed: float = 1.0) -> dict:
+        t0 = time.perf_counter()
+        with wave.open(out_wav, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(24000)
+            w.writeframes(b"\x00\x00" * 240)  # 10ms of silence
+        total = time.perf_counter() - t0
+        return {"latency_s": total, "first_chunk_s": total}
+
+    def voices(self):
+        return ["silent"]
+
+
 ENGINES = {
     "kokoro-pytorch": KokoroPyTorch,
     "kokoro-mlx": KokoroMLX,
     "piper": Piper,
     "macos-say": MacSay,
+    "null": Null,
 }

@@ -1,71 +1,516 @@
-#!/bin/zsh
-# speak — control CLI for claude-speak
-set -u
-ROOT="${0:A:h:h}"  # resolve symlinks (CLI is symlinked into ~/.local/bin)
-CFG="$HOME/.claude-speak/config.json"
-PORT=$(python3 -c "import json;print(json.load(open('$CFG')).get('port',7865))" 2>/dev/null || echo 7865)
-BASE="http://127.0.0.1:$PORT"
+#!/usr/bin/env python3
+"""speak — control claude-speak from anywhere, including inside a live session.
 
-api() { curl -s --max-time 5 "$@"; }
+    speak                 what's on, where, and why
+    speak on|off          this session (add --global to move the default)
+    speak mute 15m        shut up for a while, then come back
+    speak say <text>      hear it right now, gating bypassed
+"""
 
-cfg_set() {  # cfg_set key json-value  (updates file AND live daemon)
-  python3 - "$1" "$2" <<'EOF'
-import json, sys, pathlib
-p = pathlib.Path.home() / ".claude-speak/config.json"
-cfg = json.loads(p.read_text()) if p.exists() else {}
-cfg[sys.argv[1]] = json.loads(sys.argv[2])
-p.parent.mkdir(exist_ok=True)
-p.write_text(json.dumps(cfg, indent=2) + "\n")
-EOF
-  api -X POST "$BASE/config" -d "{\"$1\": $2}" >/dev/null 2>&1 || true
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parent.parent  # resolve(): this is symlinked
+sys.path.insert(0, str(ROOT))
+
+from core import client, policy, presence, state, voice  # noqa: E402
+
+BOLD, DIM, GREEN, YELLOW, RED, RESET = (
+    ("\033[1m", "\033[2m", "\033[32m", "\033[33m", "\033[31m", "\033[0m")
+    if sys.stdout.isatty() else ("", "", "", "", "", "")
+)
+
+
+def die(msg: str, code: int = 1):
+    print(f"{RED}{msg}{RESET}", file=sys.stderr)
+    sys.exit(code)
+
+
+def parse_duration(s: str) -> float:
+    m = re.fullmatch(r"(\d+(?:\.\d+)?)([smh]?)", s.strip())
+    if not m:
+        die(f"can't read a duration from {s!r} (try 15m, 90s, 2h)")
+    return float(m.group(1)) * {"": 60, "s": 1, "m": 60, "h": 3600}[m.group(2)]
+
+
+def this_session() -> str | None:
+    sid = state.current_session()
+    if sid:
+        return sid
+    st = client.get("/status")
+    return (st or {}).get("active_session") or None
+
+
+def scope_and_session(args: list[str]) -> tuple[str, str | None]:
+    """--global forces the global default; otherwise this terminal's session."""
+    if "--global" in args or "-g" in args:
+        return "global", None
+    sid = this_session()
+    if not sid:
+        return "global", None
+    return "session", sid
+
+
+# ------------------------------------------------------------------ commands
+
+def cmd_status(_args):
+    sid = this_session()
+    eff = state.resolve(sid)
+    st = client.get("/status")
+    on = eff["enabled"]
+    mark = f"{GREEN}ON{RESET}" if on else f"{DIM}OFF{RESET}"
+    where = {"session": "this session", "global": "global default",
+             "muted": f"muted for {eff.get('muted_for_s', 0)}s"}[eff["source"]]
+    print(f"{BOLD}voice{RESET}      {mark}  {DIM}({where}){RESET}")
+    print(f"{BOLD}sounds{RESET}     {eff['voice']} @ {eff['speed']}x  "
+          f"{DIM}engine {eff['engine']}{RESET}")
+    gap = policy.min_gap(eff)
+    how = "" if eff["min_gap_s"] is not None else " from style"
+    print(f"{BOLD}style{RESET}      {eff['style']}  {DIM}fallback={eff['fallback']} "
+          f"min-gap={gap:g}s{how}{RESET}")
+    if st:
+        q = f", {st['queued']} queued" if st.get("queued") else ""
+        speaking = "speaking" if st.get("speaking") else "idle"
+        loaded = "warm" if st.get("engine_loaded") else "cold"
+        print(f"{BOLD}daemon{RESET}     up {st['uptime_s']}s, {speaking}{q} "
+              f"{DIM}(engine {loaded}, pid {st['pid']}){RESET}")
+    else:
+        print(f"{BOLD}daemon{RESET}     {DIM}not running{RESET}")
+    print(f"{BOLD}session{RESET}    {sid[:12] if sid else DIM + 'unknown' + RESET}")
+    block = presence.check(eff, use_cache=False)
+    if block and on:
+        print(f"{YELLOW}quiet{RESET}      holding speech: {block}")
+    if not on:
+        print(f"\n{DIM}turn it on for this session:{RESET} speak on")
+
+
+def first_run():
+    """Once, ever: prove the audio path works and let them hear the voice."""
+    cfg = state.load_config()
+    print(f"{DIM}first run — warming {cfg['engine']}…{RESET}", flush=True)
+    if not client.ensure_daemon(wait_s=90):
+        die("the voice daemon wouldn't start — run `speak doctor`")
+    res = client.speak(
+        f"Voice is on. I'm {cfg['voice'].replace('_', ' ')}, and this is how I sound.",
+        kind="alert", source="cli")
+    if not res.get("spoken"):
+        print(f"{YELLOW}queued but not spoken: {res.get('reason')}{RESET}")
+    state.save_config({"onboarded": True})
+    print(f"{DIM}don't like the voice?{RESET} speak voices  ·  "
+          f"speak preview am_michael  ·  speak voice am_michael")
+    print(f"{DIM}too chatty?{RESET} speak style terse   {DIM}·  quiet for a bit:{RESET} "
+          f"speak mute 20m")
+
+
+def _set_enabled(on: bool, args: list[str]):
+    scope, sid = scope_and_session(args)
+    state.set_enabled(on, sid, scope)
+    if on:
+        client.ensure_daemon()
+        # Typing `speak on` here makes this the live session. Without it the
+        # daemon only learns that on the next prompt, and the speak tool —
+        # which carries no session id — resolves against the global default
+        # and stays mute for the rest of the turn.
+        if sid:
+            client.post("/turn", {"session_id": sid, "interactive": True},
+                        timeout=0.5)
+    else:
+        client.post("/stop", {}, timeout=0.5)
+    where = "globally" if scope == "global" else "for this session"
+    print(f"voice {GREEN if on else DIM}{'ON' if on else 'OFF'}{RESET} {where}")
+    if not on:
+        return
+    if not state.mcp_registered():
+        print(f"{YELLOW}the speak tool isn't registered — run ./install.sh, then "
+              f"restart Claude Code{RESET}")
+    if scope == "session" and sid:
+        print(f"{DIM}Claude can speak from here on.{RESET}")
+    if scope == "global":
+        print(f"{DIM}every interactive session will speak — `speak off --global` "
+              f"to undo.{RESET}")
+    block = presence.check(state.resolve(sid), use_cache=False)
+    if block:
+        print(f"{YELLOW}holding speech for now: {block}{RESET}")
+    if not state.load_config()["onboarded"]:
+        first_run()
+
+
+def cmd_on(args):
+    _set_enabled(True, args)
+
+
+def cmd_off(args):
+    _set_enabled(False, args)
+
+
+def cmd_toggle(args):
+    _set_enabled(not state.resolve(this_session())["enabled"], args)
+
+
+def cmd_mute(args):
+    secs = parse_duration(args[0]) if args else 900.0
+    sid = this_session()
+    if not sid:
+        die("no session to mute here — use `speak off --global`")
+    state.save_session(sid, {"muted_until": time.time() + secs})
+    client.post("/stop", {}, timeout=0.5)
+    print(f"muted for {int(secs // 60)}m {int(secs % 60)}s")
+
+
+def cmd_unmute(_args):
+    sid = this_session()
+    if sid:
+        state.save_session(sid, {"muted_until": 0})
+    print("unmuted")
+
+
+def cmd_say(args):
+    if not args:
+        die("usage: speak say <text>")
+    client.ensure_daemon(wait_s=30)
+    res = client.speak(" ".join(args), kind="alert", source="cli")
+    print(res.get("reason", "queued"))
+
+
+def cmd_preview(args):
+    """Hear a voice without committing to it."""
+    v = args[0] if args else state.resolve(this_session())["voice"]
+    if not client.ensure_daemon(wait_s=90):
+        die("daemon won't start — try `speak doctor`")
+    line = args[1] if len(args) > 1 else (
+        f"This is {v.replace('_', ' ')}. Tests are green, opening the pull request now.")
+    res = client.speak(line, kind="alert", source="cli", voice=v)
+    print(f"{v}: {res.get('reason', 'queued')}   {DIM}keep it:{RESET} speak voice {v}")
+
+
+def cmd_report(args):
+    """What the voice channel actually did — the quality dashboard."""
+    days = float(args[0]) if args and args[0].replace(".", "").isdigit() else 7.0
+    path = state.home() / "utterances.jsonl"
+    if not path.exists():
+        print(f"{DIM}nothing spoken yet{RESET}")
+        return
+    cutoff = time.time() - days * 86400
+    spoken, suppressed = [], {}
+    for line in path.read_text().splitlines():
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        if e.get("ts", 0) < cutoff:
+            continue
+        if e.get("event") == "spoken":
+            spoken.append(e)
+        else:
+            suppressed[e.get("reason", "?")] = suppressed.get(e.get("reason", "?"), 0) + 1
+
+    if not spoken:
+        print(f"{DIM}nothing spoken in the last {days:g} days{RESET}")
+        return
+
+    words = sorted(e.get("words", len(e.get("text", "").split())) for e in spoken)
+    median = words[len(words) // 2]
+    over = sum(1 for w in words if w > voice.WORD_BUDGET)
+    flagged = [i for e in spoken for i in (e.get("issues") or [])]
+    kinds: dict[str, int] = {}
+    for e in spoken:
+        kinds[e.get("kind", "?")] = kinds.get(e.get("kind", "?"), 0) + 1
+    lags = sorted(e.get("lag_s", 0) for e in spoken)
+
+    print(f"{BOLD}last {days:g} days{RESET}   {len(spoken)} spoken, "
+          f"{sum(suppressed.values())} held back")
+    print(f"{BOLD}length{RESET}      median {median} words, "
+          f"{over} over budget ({100 * over // max(len(words), 1)}%)")
+    print(f"{BOLD}lag{RESET}         median {lags[len(lags) // 2]:.1f}s from call to speech")
+    print(f"{BOLD}kinds{RESET}       " + "  ".join(
+        f"{k} {v}" for k, v in sorted(kinds.items(), key=lambda kv: -kv[1])))
+    if flagged:
+        top: dict[str, int] = {}
+        for i in flagged:
+            key = i.split("—")[0].strip()
+            top[key] = top.get(key, 0) + 1
+        print(f"{BOLD}on-voice{RESET}    {100 - 100 * len(flagged) // len(spoken)}% clean")
+        for k, v in sorted(top.items(), key=lambda kv: -kv[1])[:4]:
+            print(f"{YELLOW}  · {v}x {k}{RESET}")
+    else:
+        print(f"{GREEN}on-voice    every line clean{RESET}")
+    if suppressed:
+        print(f"{BOLD}held back{RESET}   " + "  ".join(
+            f"{k} {v}" for k, v in sorted(suppressed.items(), key=lambda kv: -kv[1])))
+
+
+def cmd_quiet(args):
+    """Configure when not to talk."""
+    if not args:
+        cfg = state.load_config()
+        print(f"hours   {cfg['quiet_hours'] or DIM + 'none' + RESET}")
+        print(f"apps    {', '.join(cfg['quiet_apps']) or DIM + 'default meeting apps' + RESET}")
+        print(f"lock    {cfg['respect_lock']}   mute  {cfg['respect_mute']}")
+        now = presence.check(cfg, use_cache=False)
+        print(f"now     {YELLOW + now + RESET if now else GREEN + 'clear to speak' + RESET}")
+        return
+    if args[0] == "hours":
+        val = "" if len(args) < 2 or args[1] in ("none", "off") else args[1]
+        state.save_config({"quiet_hours": val})
+        print(f"quiet hours -> {val or 'none'}")
+    elif args[0] == "apps":
+        state.save_config({"quiet_apps": args[1:]})
+        print(f"quiet apps -> {', '.join(args[1:]) or 'defaults'}")
+    else:
+        die("usage: speak quiet [hours 22:00-08:00 | apps zoom.us 'Microsoft Teams']")
+
+
+def cmd_stop(_args):
+    client.post("/stop", {}, timeout=1.0)
+    print("stopped")
+
+
+def cmd_voice(args):
+    if not args:
+        print(state.resolve(this_session())["voice"])
+        return
+    state.save_config({"voice": args[0]})
+    client.post("/config", {"voice": args[0]}, timeout=1.0)
+    print(f"voice -> {args[0]}")
+
+
+def cmd_voices(_args):
+    if not client.ensure_daemon(wait_s=45):
+        die("daemon won't start — try `speak doctor`")
+    res = client.get("/voices", timeout=90)
+    if not res:
+        die("no answer from the daemon")
+    for v in res.get("voices", []):
+        print(v)
+
+
+def _numeric_setter(key: str, lo: float, hi: float, auto: bool = False):
+    def fn(args):
+        if not args:
+            print(state.resolve(this_session())[key])
+            return
+        if auto and args[0] in ("auto", "default"):
+            state.save_config({key: None})
+            client.post("/config", {key: None}, timeout=1.0)
+            print(f"{key} -> auto (follows style)")
+            return
+        try:
+            val = float(args[0])
+        except ValueError:
+            die(f"usage: speak {key} <{lo}-{hi}>" + (" | auto" if auto else ""))
+        if not lo <= val <= hi:
+            die(f"{key} must be between {lo} and {hi}")
+        state.save_config({key: val})
+        client.post("/config", {key: val}, timeout=1.0)
+        print(f"{key} -> {val}")
+    return fn
+
+
+def _choice_setter(key: str, choices: tuple[str, ...]):
+    def fn(args):
+        if not args:
+            print(state.resolve(this_session())[key])
+            return
+        if args[0] not in choices:
+            die(f"usage: speak {key} {'|'.join(choices)}")
+        state.save_config({key: args[0]})
+        client.post("/config", {key: args[0]}, timeout=1.0)
+        print(f"{key} -> {args[0]}")
+    return fn
+
+
+def cmd_sessions(_args):
+    sessions = state.list_sessions()
+    if not sessions:
+        print(f"{DIM}no per-session overrides{RESET}")
+        return
+    now = time.time()
+    for s in sessions:
+        flag = ("on" if s.get("enabled") else "off") if "enabled" in s else "-"
+        muted = s.get("muted_until", 0)
+        extra = f" muted {int(muted - now)}s" if muted > now else ""
+        age = int((now - s.get("updated", now)) / 60)
+        print(f"{s['session_id'][:12]}  {flag:>3}{extra}  {DIM}{age}m ago{RESET}")
+
+
+def cmd_tail(args):
+    n = int(args[0]) if args and args[0].isdigit() else 20
+    path = state.home() / "utterances.jsonl"
+    if not path.exists():
+        print(f"{DIM}nothing spoken yet{RESET}")
+        return
+    lines = path.read_text().splitlines()[-n:]
+    for line in lines:
+        try:
+            e = json.loads(line)
+        except Exception:
+            continue
+        ts = time.strftime("%H:%M:%S", time.localtime(e.get("ts", 0)))
+        if e.get("event") == "spoken":
+            print(f"{ts} {GREEN}{e.get('kind','?'):<9}{RESET} {e.get('text','')}")
+        elif e.get("event") == "fallback":
+            print(f"{ts} {YELLOW}fallback{RESET}  {e.get('text','')}")
+        else:
+            print(f"{ts} {DIM}{e.get('reason','?'):<9} {e.get('text','')}{RESET}")
+
+
+def cmd_log(args):
+    n = args[0] if args and args[0].isdigit() else "30"
+    path = state.home() / "speakd.log"
+    if path.exists():
+        subprocess.run(["tail", "-n", n, str(path)])
+
+
+def cmd_lint(args):
+    if not args:
+        die("usage: speak lint <text>")
+    clean, issues = voice.lint(" ".join(args))
+    print(f"{BOLD}spoken as:{RESET} {clean}")
+    for i in issues:
+        print(f"{YELLOW}  · {i}{RESET}")
+    if not issues:
+        print(f"{GREEN}  · clean{RESET}")
+
+
+def cmd_restart(_args):
+    subprocess.run(["pkill", "-f", "daemon/speakd.py"], capture_output=True)
+    time.sleep(0.6)
+    print("restarted" if client.ensure_daemon(wait_s=45) else "failed to start")
+
+
+def cmd_kill(_args):
+    subprocess.run(["pkill", "-f", "daemon/speakd.py"], capture_output=True)
+    print("daemon stopped")
+
+
+def cmd_doctor(_args):
+    ok = True
+    print(f"{BOLD}root{RESET}       {ROOT}")
+    print(f"{BOLD}state{RESET}      {state.home()}")
+    print(f"{BOLD}config{RESET}     {json.dumps(state.load_config())}")
+
+    sid = this_session()
+    print(f"{BOLD}session{RESET}    {sid or 'unknown'}  "
+          f"{DIM}(surface {state.surface_key()}){RESET}")
+    if not sid:
+        print(f"{YELLOW}  · no session bound yet — send one message in a Claude "
+              f"Code session first{RESET}")
+
+    up = client.alive()
+    print(f"{BOLD}daemon{RESET}     {'UP' if up else 'DOWN'}")
+    ok &= up or True
+
+    py = client.python_bin()
+    print(f"{BOLD}python{RESET}     {py}")
+    probe = subprocess.run(
+        [py, "-c", "import sys; sys.path.insert(0, %r); import adapters; "
+                   "print(' '.join(sorted(adapters.ENGINES)))" % str(ROOT / "engines")],
+        capture_output=True, text=True,
+    )
+    if probe.returncode == 0:
+        print(f"{BOLD}engines{RESET}    {probe.stdout.strip()}")
+    else:
+        ok = False
+        print(f"{RED}engines    FAILED: {probe.stderr.strip().splitlines()[-1:]}{RESET}")
+
+    settings = Path.home() / ".claude/settings.json"
+    try:
+        hooks = json.loads(settings.read_text()).get("hooks", {})
+        wired = sorted(ev for ev, groups in hooks.items()
+                       for g in groups for h in g.get("hooks", [])
+                       if "claude_speak_hook.py" in h.get("command", ""))
+        missing = {"SessionStart", "UserPromptSubmit", "Stop", "Notification"} - set(wired)
+        print(f"{BOLD}hooks{RESET}      {', '.join(wired) or 'NONE'}")
+        if missing:
+            ok = False
+            print(f"{YELLOW}  · missing: {', '.join(sorted(missing))} — run install.sh{RESET}")
+    except Exception as e:
+        ok = False
+        print(f"{RED}hooks      unreadable: {e}{RESET}")
+
+    mcp = subprocess.run(["claude", "mcp", "get", "claude-speak"],
+                         capture_output=True, text=True)
+    if mcp.returncode == 0:
+        print(f"{BOLD}mcp{RESET}        registered")
+    else:
+        ok = False
+        print(f"{YELLOW}mcp        not registered — run install.sh{RESET}")
+
+    print(f"\n{GREEN}all good{RESET}" if ok else f"\n{YELLOW}see the notes above{RESET}")
+    sys.exit(0 if ok else 1)
+
+
+def cmd_help(_args):
+    print(f"""{BOLD}speak{RESET} — Claude Code's voice
+
+  {BOLD}speak{RESET}                     status: what's on, where, and why
+  {BOLD}speak on{RESET} [--global]       voice on for this session (or everywhere)
+  {BOLD}speak off{RESET} [--global]      voice off
+  {BOLD}speak toggle{RESET}              flip it
+  {BOLD}speak mute{RESET} [15m]          quiet for a while, then come back
+  {BOLD}speak unmute{RESET}
+  {BOLD}speak stop{RESET}                cut off what's being said right now
+
+  {BOLD}speak voice{RESET} [name]        af_heart, am_michael, bf_emma, …
+  {BOLD}speak voices{RESET}              list them
+  {BOLD}speak preview{RESET} <voice>     hear one without switching to it
+  {BOLD}speak speed{RESET} [0.8-1.4]     {BOLD}speak volume{RESET} [0-1]
+  {BOLD}speak style{RESET} [companion|terse|narrate]  how much it talks: 15s / 6s / 2.5s apart
+  {BOLD}speak min-gap{RESET} [secs|auto]  pin that spacing yourself, or follow the style
+  {BOLD}speak fallback{RESET} [off|lead|full]   what to say if Claude stayed silent
+  {BOLD}speak engine{RESET} [name]       kokoro-mlx | kokoro-pytorch | piper | macos-say
+
+  {BOLD}speak quiet{RESET}               when not to talk (hours, meeting apps)
+  {BOLD}speak quiet hours{RESET} 22:00-08:00
+  {BOLD}speak quiet apps{RESET} zoom.us "Microsoft Teams"
+
+  {BOLD}speak say{RESET} <text>          say it now, bypassing every gate
+  {BOLD}speak lint{RESET} <text>         see what the voice channel does to a line
+  {BOLD}speak tail{RESET} [n]            what has been said, and what was held back
+  {BOLD}speak report{RESET} [days]       is it actually speaking well?
+  {BOLD}speak sessions{RESET}            per-session overrides
+  {BOLD}speak doctor{RESET}              {BOLD}speak log{RESET} | {BOLD}restart{RESET} | {BOLD}kill{RESET}
+""")
+
+
+COMMANDS = {
+    "status": cmd_status, "on": cmd_on, "off": cmd_off, "toggle": cmd_toggle,
+    "mute": cmd_mute, "unmute": cmd_unmute, "say": cmd_say, "stop": cmd_stop,
+    "voice": cmd_voice, "voices": cmd_voices, "sessions": cmd_sessions,
+    "preview": cmd_preview, "report": cmd_report, "quiet": cmd_quiet,
+    "tail": cmd_tail, "log": cmd_log, "lint": cmd_lint, "restart": cmd_restart,
+    "kill": cmd_kill, "start": lambda a: print(
+        "started" if client.ensure_daemon(wait_s=45) else "failed"),
+    "doctor": cmd_doctor, "help": cmd_help, "-h": cmd_help, "--help": cmd_help,
+    "speed": _numeric_setter("speed", 0.7, 1.5),
+    "volume": _numeric_setter("volume", 0.0, 1.0),
+    "min-gap": _numeric_setter("min_gap_s", 0.0, 120.0, auto=True),
+    "style": _choice_setter("style", ("companion", "terse", "narrate")),
+    "fallback": _choice_setter("fallback", ("off", "lead", "full")),
+    "engine": _choice_setter(
+        "engine", ("kokoro-mlx", "kokoro-pytorch", "piper", "macos-say")),
 }
 
-ensure_daemon() {
-  if ! api "$BASE/status" >/dev/null 2>&1; then
-    echo "starting speakd..."
-    mkdir -p "$HOME/.claude-speak"
-    nohup "$ROOT/.venv/bin/python" "$ROOT/daemon/speakd.py" \
-      >> "$HOME/.claude-speak/speakd.out" 2>&1 &
-    for i in {1..40}; do
-      api "$BASE/status" >/dev/null 2>&1 && break
-      sleep 0.5
-    done
-  fi
-}
 
-case "${1:-status}" in
-  on)      cfg_set enabled true; ensure_daemon; echo "voice replies ON" ;;
-  off)     cfg_set enabled false; api -X POST "$BASE/stop" >/dev/null 2>&1; echo "voice replies OFF" ;;
-  stop)    api -X POST "$BASE/stop" >/dev/null; echo "stopped" ;;
-  status)  api "$BASE/status" | python3 -m json.tool 2>/dev/null || echo "speakd not running (speak on to start)" ;;
-  voices)  ensure_daemon; api "$BASE/voices" | python3 -c "import json,sys; [print(v) for v in json.load(sys.stdin)['voices']]" ;;
-  voice)   [ -z "${2:-}" ] && { echo "usage: speak voice <name>"; exit 1; }
-           cfg_set voice "\"$2\""; echo "voice -> $2" ;;
-  speed)   [ -z "${2:-}" ] && { echo "usage: speak speed <0.8-1.3>"; exit 1; }
-           cfg_set speed "$2"; echo "speed -> $2" ;;
-  mode)    case "${2:-}" in
-             full|summary|auto) cfg_set mode "\"$2\""; echo "mode -> $2" ;;
-             *) echo "usage: speak mode full|summary|auto"; exit 1 ;;
-           esac ;;
-  engine)  [ -z "${2:-}" ] && { echo "usage: speak engine <kokoro-mlx|kokoro-pytorch|piper|macos-say>"; exit 1; }
-           cfg_set engine "\"$2\""; echo "engine -> $2 (loads on next speak)" ;;
-  say)     shift; ensure_daemon
-           python3 -c "import json,sys,urllib.request; urllib.request.urlopen(urllib.request.Request('$BASE/speak', data=json.dumps({'text':' '.join(sys.argv[1:])}).encode(), headers={'Content-Type':'application/json'}))" "$@"
-           echo "queued" ;;
-  restart) pkill -f "daemon/speakd.py" 2>/dev/null; sleep 0.5; ensure_daemon; echo "restarted" ;;
-  log)     tail -n "${2:-30}" "$HOME/.claude-speak/speakd.log" ;;
-  doctor)  echo "root: $ROOT"; echo "config: $(cat $CFG 2>/dev/null || echo MISSING)"
-           api "$BASE/status" >/dev/null 2>&1 && echo "daemon: UP" || echo "daemon: DOWN"
-           "$ROOT/.venv/bin/python" -c "import sys; sys.path.insert(0,'$ROOT/engines'); import adapters; print('adapters: OK')" ;;
-  *) cat <<USAGE
-speak — Claude Code voice replies
-  speak on|off          enable / disable voice replies
-  speak status          daemon status
-  speak stop            interrupt current speech
-  speak voice <name>    set voice        speak voices   list voices
-  speak speed <x>       0.8–1.3          speak mode full|summary|auto
-  speak engine <name>   switch TTS engine
-  speak say <text...>   test speech      speak restart | log | doctor
-USAGE
-  ;;
-esac
+def main():
+    argv = sys.argv[1:]
+    cmd = argv[0] if argv else "status"
+    fn = COMMANDS.get(cmd)
+    if not fn:
+        die(f"unknown command {cmd!r} — try `speak help`")
+    state.home().mkdir(parents=True, exist_ok=True)
+    fn(argv[1:])
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        sys.exit(130)

@@ -1,16 +1,22 @@
-"""speakd — local TTS daemon for claude-speak.
+"""speakd — the voice of claude-speak.
 
-Keeps a TTS engine warm and plays speech through the Mac's speakers.
+Holds a TTS engine warm and owns every decision about when the machine is
+allowed to make noise: which session may speak, how often, what jumps the
+queue, and when to shut up because the user started typing.
 
 HTTP API (127.0.0.1 only):
-  POST /speak   {"text": "...", "session_id": "..."}  -> queues speech, returns immediately
-  POST /stop                                          -> interrupt current speech, clear queue
-  POST /config  {"voice"|"speed"|"engine"|...}        -> live-update config
-  GET  /status                                        -> engine, voice, queue, speaking
-  GET  /voices                                        -> voices for current engine
+  GET  /health                     liveness, cheap
+  GET  /status                     engine, voice, queue, per-session state
+  GET  /voices                     voices for the current engine
+  GET  /metrics                    counters by outcome
+  POST /speak    {text, kind, session_id, source, request_id}
+  POST /turn     {session_id}      user submitted a prompt: barge-in + new turn
+  POST /close    {session_id, text} turn ended: speak a fallback iff Claude was silent
+  POST /stop     {}                interrupt playback, clear queue
+  POST /session  {session_id, enabled|muted_until|...}
+  POST /config   {voice|speed|engine|enabled|...}
 
-Config: ~/.claude-speak/config.json
-Log:    ~/.claude-speak/speakd.log
+State: ~/.claude-speak/  (config.json, sessions/, speakd.log, utterances.jsonl)
 """
 
 from __future__ import annotations
@@ -18,236 +24,250 @@ from __future__ import annotations
 import json
 import os
 import queue
-import re
-from collections import deque
 import signal
 import subprocess
 import sys
 import tempfile
 import threading
 import time
+from collections import Counter, deque
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "engines"))
 
-HOME = Path.home() / ".claude-speak"
-HOME.mkdir(exist_ok=True)
-CONFIG_PATH = HOME / "config.json"
-PID_PATH = HOME / "speakd.pid"
-LOG_PATH = HOME / "speakd.log"
+from core import policy, presence, state, voice  # noqa: E402
 
-DEFAULTS = {
-    "enabled": True,
-    "engine": "kokoro-mlx",
-    "voice": "af_heart",
-    "speed": 1.0,
-    "mode": "auto",          # auto: prefer <speak> block, else speechified full text
-    "max_chars": 2200,        # cap on speechified text (~2.5 min)
-    "port": 7865,
-}
+LOG_MAX_BYTES = 2_000_000
+
+# Paths are resolved per call, not at import: the state root is env-overridable
+# and a long-lived daemon must not pin a stale one.
+
+
+def log_path() -> Path:
+    return state.home() / "speakd.log"
+
+
+def utterances_path() -> Path:
+    return state.home() / "utterances.jsonl"
 
 
 def log(msg: str):
-    with LOG_PATH.open("a") as f:
-        f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    try:
+        p = log_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        if p.exists() and p.stat().st_size > LOG_MAX_BYTES:
+            p.replace(p.with_suffix(".log.1"))
+        with p.open("a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} {msg}\n")
+    except Exception:
+        pass
 
 
-def load_config() -> dict:
-    cfg = dict(DEFAULTS)
-    if CONFIG_PATH.exists():
-        try:
-            cfg.update(json.loads(CONFIG_PATH.read_text()))
-        except Exception as e:
-            log(f"config parse error: {e}")
-    return cfg
+def record(entry: dict):
+    """Append to the utterance ledger — powers `speak tail`, `speak report`."""
+    try:
+        entry["ts"] = time.time()
+        p = utterances_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        with p.open("a") as f:
+            f.write(json.dumps(entry) + "\n")
+    except Exception:
+        pass
 
 
-def save_config(cfg: dict):
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2) + "\n")
+# ---------------------------------------------------------------- speaker
 
+class Item:
+    __slots__ = ("prio", "seq", "gen", "kind", "text", "session_id", "cancelled",
+                 "created", "voice", "issues")
 
-# ---------------------------------------------------------------- speechify
+    def __init__(self, prio, seq, gen, kind, text, session_id,
+                 created=None, voice=None, issues=None):
+        self.prio, self.seq, self.gen = prio, seq, gen
+        self.kind, self.text, self.session_id = kind, text, session_id
+        self.cancelled = False
+        self.created = created or time.time()
+        self.voice = voice          # per-line override, for `speak preview`
+        self.issues = issues or []
 
-CODE_FENCE = re.compile(r"```.*?```", re.S)
-INLINE_CODE = re.compile(r"`([^`]*)`")
-LINK = re.compile(r"\[([^\]]+)\]\([^)]+\)")
-URL = re.compile(r"https?://\S+")
-TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$", re.M)
-HEADER = re.compile(r"^#{1,6}\s+", re.M)
-BULLET = re.compile(r"^\s*[-*+]\s+", re.M)
-NUMBULLET = re.compile(r"^\s*\d+[.)]\s+", re.M)
-EMPHASIS = re.compile(r"(\*\*|__|\*|_|~~)")
-SPEAK_BLOCK = re.compile(r"<speak>(.*?)</speak>", re.S | re.I)
-PATHLIKE = re.compile(r"(?:~|/)?(?:[\w.-]+/){2,}[\w.-]+")
+    def __lt__(self, other):
+        return (self.prio, self.seq) < (other.prio, other.seq)
 
-
-def speechify(text: str, max_chars: int) -> str:
-    """Turn a Claude Code markdown reply into speakable prose."""
-    m = SPEAK_BLOCK.search(text)
-    if m:
-        text = m.group(1)
-    else:
-        n_fences = len(CODE_FENCE.findall(text))
-        text = CODE_FENCE.sub(" Code block omitted. " if n_fences else "", text)
-        # collapse tables: keep nothing, mention once
-        if TABLE_ROW.search(text):
-            text = TABLE_ROW.sub("", text)
-            text += " There is a table with details on screen."
-    text = SPEAK_BLOCK.sub("", text)
-    text = LINK.sub(r"\1", text)
-    text = URL.sub("a link", text)
-    text = INLINE_CODE.sub(r"\1", text)
-    text = HEADER.sub("", text)
-    text = BULLET.sub("", text)
-    text = NUMBULLET.sub("", text)
-    text = EMPHASIS.sub("", text)
-    text = PATHLIKE.sub(lambda m: m.group(0).split("/")[-1], text)
-    text = re.sub(r"\s+", " ", text).strip()
-    if len(text) > max_chars:
-        cut = text[:max_chars]
-        cut = cut[: cut.rfind(". ") + 1] or cut
-        text = cut + " The rest is on screen."
-    return text
-
-
-SENT_SPLIT = re.compile(r"(?<=[.!?])\s+")
-
-
-def sentences(text: str, chunk_chars: int = 260) -> list[str]:
-    """Split into speakable chunks: sentences, merged up to chunk_chars."""
-    parts = [s.strip() for s in SENT_SPLIT.split(text) if s.strip()]
-    out: list[str] = []
-    buf = ""
-    for s in parts:
-        if buf and len(buf) + len(s) + 1 > chunk_chars:
-            out.append(buf)
-            buf = s
-        else:
-            buf = f"{buf} {s}".strip()
-    if buf:
-        out.append(buf)
-    return out
-
-
-# ---------------------------------------------------------------- gating
-
-def should_speak(active_session: str | None, body: dict) -> tuple[bool, str]:
-    """Decide whether a /speak request may play.
-
-    - No session_id (CLI/tests): always allowed.
-    - Active session recorded: only that session speaks (last place the user typed).
-    - No active session yet (fresh daemon): only interactive sessions speak.
-    """
-    sid = body.get("session_id")
-    if not sid:
-        return True, "manual"
-    if active_session:
-        if sid == active_session:
-            return True, "active-session"
-        return False, "inactive-session"
-    if body.get("interactive"):
-        return True, "interactive-fallback"
-    return False, "not-interactive"
-
-
-# ---------------------------------------------------------------- player
 
 class Speaker:
-    def __init__(self, cfg: dict):
-        self.cfg = cfg
-        self.q: queue.Queue = queue.Queue()
-        self.gen = 0                      # interrupt generation counter
-        self.lock = threading.Lock()
+    def __init__(self):
+        self.q: queue.PriorityQueue[Item] = queue.PriorityQueue()
+        self.gen = 0
+        self.seq = 0
+        self.lock = threading.RLock()
         self.current_proc: subprocess.Popen | None = None
         self.speaking = False
         self.engine = None
         self.engine_name = None
+        self.engine_voice = None
         self.engine_lock = threading.Lock()
         self.tmpdir = Path(tempfile.mkdtemp(prefix="claude-speak-"))
+        self.pending_progress: Item | None = None
+        self.last_utterance_at = 0.0
+        self.last_text = ""
+        self.last_text_at = 0.0
+        self.closed_this_turn: dict[str, bool] = {}
         threading.Thread(target=self._worker, daemon=True).start()
 
-    # -- engine management
-    def ensure_engine(self):
+    # -- engine
+    def ensure_engine(self, cfg: dict):
         with self.engine_lock:
-            want = self.cfg["engine"]
+            want, want_voice = cfg["engine"], cfg["voice"]
             if self.engine is not None and self.engine_name == want:
+                if self.engine_voice != want_voice:
+                    self.engine.voice = want_voice
+                    self.engine_voice = want_voice
                 return
             from adapters import ENGINES
-            log(f"loading engine {want} voice={self.cfg['voice']}")
+
+            log(f"loading engine {want} voice={want_voice}")
             t0 = time.perf_counter()
-            eng = ENGINES[want](voice=self.cfg["voice"])
+            eng = ENGINES[want](voice=want_voice)
             eng.load()
-            self.engine = eng
-            self.engine_name = want
-            log(f"engine {want} ready in {time.perf_counter()-t0:.1f}s")
+            self.engine, self.engine_name, self.engine_voice = eng, want, want_voice
+            log(f"engine {want} ready in {time.perf_counter() - t0:.1f}s")
 
-    def set_voice(self, voice: str):
-        with self.engine_lock:
-            if self.engine is not None:
-                self.engine.voice = voice
-
-    # -- speaking
-    def speak(self, text: str):
-        clean = speechify(text, self.cfg["max_chars"])
-        if not clean:
-            return
+    # -- enqueue
+    def enqueue(self, text: str, kind: str, session_id: str, prio: int,
+                coalesce: bool, source: str = "tool", created: float | None = None,
+                voice: str | None = None, issues: list | None = None) -> None:
         with self.lock:
-            gen = self.gen
-        for chunk in sentences(clean):
-            self.q.put((gen, chunk))
+            if coalesce and self.pending_progress is not None:
+                self.pending_progress.cancelled = True
+            self.seq += 1
+            item = Item(prio, self.seq, self.gen, kind, text, session_id,
+                        created=created, voice=voice, issues=issues)
+            if kind == "progress":
+                self.pending_progress = item
+            if session_id and source == "tool" and kind == "done":
+                # Only a closing line closes the turn. Opening with "give me a
+                # minute" and then going quiet is worse than never speaking —
+                # the promise was made out loud, so the answer has to be too.
+                # (Also why a spoken permission prompt can't cancel the close.)
+                self.closed_this_turn[session_id] = True
+            self.q.put(item)
 
     def stop(self):
+        """Barge-in: drop everything queued and cut the current line short."""
         with self.lock:
             self.gen += 1
+            self.pending_progress = None
             proc = self.current_proc
-        try:
-            while True:
+        drained = 0
+        while True:
+            try:
                 self.q.get_nowait()
-        except queue.Empty:
-            pass
+                drained += 1
+            except queue.Empty:
+                break
         if proc and proc.poll() is None:
             proc.terminate()
+        return drained
+
+    def new_turn(self, session_id: str):
+        self.stop()
+        with self.lock:
+            self.closed_this_turn[session_id] = False
 
     def _worker(self):
         idx = 0
         while True:
-            gen, chunk = self.q.get()
+            item = self.q.get()
             with self.lock:
-                if gen != self.gen:
-                    continue
+                stale = item.gen != self.gen or item.cancelled
+                if self.pending_progress is item:
+                    self.pending_progress = None
+            if stale:
+                continue
+            cfg0 = state.resolve(item.session_id)
+            age = time.time() - item.created
+            if age > float(cfg0.get("utterance_ttl_s", 45.0)) and item.kind != "done":
+                # Speech is a live channel. A line that waited out a cold engine
+                # start or a long queue is now a lie about the present.
+                log(f"dropped stale {item.kind} after {age:.0f}s: {item.text[:50]!r}")
+                record({"event": "suppressed", "reason": "stale", "kind": item.kind,
+                        "text": item.text[:200], "session": item.session_id[:12],
+                        "age_s": round(age, 1)})
+                continue
+            with self.lock:
+                # Stamp on dequeue, not on playback: synthesis takes long enough
+                # that a burst of lines would slip under the min-gap floor.
+                self.last_utterance_at = time.time()
+                self.last_text, self.last_text_at = item.text, self.last_utterance_at
+            cfg = dict(cfg0)
+            if item.voice:
+                cfg["voice"] = item.voice
             try:
-                self.ensure_engine()
-                self.speaking = True
-                idx += 1
-                wav = str(self.tmpdir / f"chunk{idx % 8}.wav")
-                speed = float(self.cfg.get("speed", 1.0))
-                t0 = time.perf_counter()
-                self.engine.synthesize(chunk, wav, speed=speed)
-                log(f"synth {time.perf_counter()-t0:.2f}s: {chunk[:60]!r}")
-                with self.lock:
-                    if gen != self.gen:
-                        continue
-                    proc = subprocess.Popen(
-                        ["afplay", wav],
-                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    )
-                    self.current_proc = proc
-                proc.wait()
+                self.ensure_engine(cfg)
             except Exception as e:
-                log(f"worker error: {type(e).__name__}: {e}")
-            finally:
+                log(f"engine load failed: {type(e).__name__}: {e}")
+                continue
+            chunks = voice.sentences(item.text)
+            t_start = time.perf_counter()
+            for chunk in chunks:
+                with self.lock:
+                    if item.gen != self.gen:
+                        break
+                    self.speaking = True
+                try:
+                    idx += 1
+                    wav = str(self.tmpdir / f"chunk{idx % 8}.wav")
+                    self.engine.synthesize(chunk, wav, speed=float(cfg["speed"]))
+                    with self.lock:
+                        if item.gen != self.gen:
+                            break
+                        cmd = ["afplay", wav]
+                        vol = float(cfg.get("volume", 1.0))
+                        if abs(vol - 1.0) > 0.01:
+                            cmd += ["-v", f"{vol:.2f}"]
+                        proc = subprocess.Popen(
+                            cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
+                        )
+                        self.current_proc = proc
+                    proc.wait()
+                except Exception as e:
+                    log(f"worker error: {type(e).__name__}: {e}")
+                    break
+            with self.lock:
                 self.speaking = self.q.qsize() > 0
+            record({"event": "spoken", "kind": item.kind, "text": item.text,
+                    "session": item.session_id[:12], "chunks": len(chunks),
+                    "words": len(item.text.split()), "issues": item.issues,
+                    "lag_s": round(time.time() - item.created, 1),
+                    "wall_s": round(time.perf_counter() - t_start, 2)})
+
+    def runtime(self, active_session: str | None, seen: set,
+                presence_block: str | None = None) -> policy.Runtime:
+        with self.lock:
+            return policy.Runtime(
+                now=time.time(),
+                active_session=active_session,
+                last_utterance_at=self.last_utterance_at,
+                last_text=self.last_text,
+                last_text_at=self.last_text_at,
+                queued_progress=self.pending_progress is not None,
+                queue_depth=self.q.qsize(),
+                presence_block=presence_block,
+                seen_ids=seen,
+            )
 
 
 # ---------------------------------------------------------------- http
 
 class Handler(BaseHTTPRequestHandler):
-    speaker: Speaker = None  # set at startup
+    speaker: Speaker = None
     started = time.time()
     active_session: str | None = None
-    seen_ids: "deque[str]" = None  # request_id dedupe ring
+    seen_ids: deque = None
+    counters: Counter = Counter()
 
     def _json(self, code: int, obj: dict):
         body = json.dumps(obj).encode()
@@ -266,103 +286,184 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             return {}
 
+    # -- GET
     def do_GET(self):
         sp = self.speaker
-        if self.path == "/status":
+        if self.path == "/health":
+            self._json(200, {"ok": True, "pid": os.getpid(),
+                             "uptime_s": round(time.time() - self.started)})
+        elif self.path == "/status":
+            cfg = state.resolve(Handler.active_session)
             self._json(200, {
                 "ok": True,
-                "engine": sp.engine_name or sp.cfg["engine"],
+                "enabled": cfg["enabled"],
+                "scope": cfg["source"],
+                "engine": sp.engine_name or cfg["engine"],
                 "engine_loaded": sp.engine is not None,
-                "voice": sp.cfg["voice"],
-                "speed": sp.cfg["speed"],
-                "mode": sp.cfg["mode"],
-                "enabled": sp.cfg["enabled"],
+                "voice": cfg["voice"],
+                "speed": cfg["speed"],
+                "style": cfg["style"],
+                "fallback": cfg["fallback"],
                 "speaking": sp.speaking,
                 "queued": sp.q.qsize(),
+                "presence_block": presence.check(cfg),
+                "active_session": Handler.active_session or "",
+                "sessions": [
+                    {"id": s["session_id"][:12], "enabled": s.get("enabled"),
+                     "muted_until": s.get("muted_until", 0)}
+                    for s in state.list_sessions()[:8]
+                ],
                 "uptime_s": round(time.time() - self.started),
                 "pid": os.getpid(),
             })
+        elif self.path == "/metrics":
+            self._json(200, {"counters": dict(Handler.counters)})
         elif self.path == "/voices":
             try:
-                sp.ensure_engine()
+                sp.ensure_engine(state.load_config())
                 self._json(200, {"voices": sp.engine.voices()})
             except Exception as e:
                 self._json(500, {"error": str(e)})
         else:
             self._json(404, {"error": "not found"})
 
+    # -- POST
     def do_POST(self):
         sp = self.speaker
+        body = self._body()
+        sid = body.get("session_id") or ""
+
         if self.path == "/speak":
-            body = self._body()
-            text = body.get("text", "")
-            if not sp.cfg["enabled"]:
-                self._json(200, {"queued": False, "reason": "disabled"})
-                return
-            rid = body.get("request_id")
-            if rid:
-                if rid in Handler.seen_ids:
-                    self._json(200, {"queued": False, "reason": "duplicate"})
-                    return
-                Handler.seen_ids.append(rid)
-            ok, reason = should_speak(Handler.active_session, body)
-            if not ok:
-                self._json(200, {"queued": False, "reason": reason})
-                return
-            if text.strip():
-                sp.speak(text)
-            self._json(200, {"queued": True, "reason": reason})
-        elif self.path == "/stop":
-            body = self._body()
-            sid = body.get("session_id")
-            if sid and body.get("interactive"):
+            self._handle_speak(body, sid)
+        elif self.path == "/turn":
+            if sid:
                 if Handler.active_session != sid:
                     log(f"active session -> {sid[:12]}")
                 Handler.active_session = sid
-            sp.stop()
-            self._json(200, {"stopped": True})
+            sp.new_turn(sid)
+            eff = state.resolve(sid)
+            self._json(200, {"ok": True, "enabled": eff["enabled"]})
+        elif self.path == "/close":
+            self._handle_close(body, sid)
+        elif self.path == "/stop":
+            drained = sp.stop()
+            self._json(200, {"stopped": True, "drained": drained})
+        elif self.path == "/session":
+            patch = {k: v for k, v in body.items() if k in state.SESSION_KEYS}
+            s = state.save_session(sid, patch) if sid else {}
+            self._json(200, {"ok": True, "session": s,
+                             "effective": state.resolve(sid)})
         elif self.path == "/config":
-            body = self._body()
-            allowed = {"enabled", "engine", "voice", "speed", "mode", "max_chars"}
-            changed = {k: v for k, v in body.items() if k in allowed}
-            sp.cfg.update(changed)
-            save_config(sp.cfg)
-            if "voice" in changed:
-                sp.set_voice(changed["voice"])
-            if "engine" in changed:
-                # lazy: next speak loads it
+            cfg = state.save_config(body)
+            if "engine" in body:
                 with sp.engine_lock:
-                    sp.engine = None
-            self._json(200, {"ok": True, "config": sp.cfg})
+                    sp.engine = None  # reloads lazily on the next line
+            self._json(200, {"ok": True, "config": cfg})
         else:
             self._json(404, {"error": "not found"})
+
+    def _handle_speak(self, body: dict, sid: str):
+        sp = self.speaker
+        # The MCP server has no session id of its own: a tool call belongs to
+        # whichever session the user last typed in, which is the active one.
+        if not sid and body.get("source") == "tool":
+            sid = Handler.active_session or ""
+        if not sid and body.get("source") == "tool":
+            # No live session yet (daemon restarted, or voice was switched on
+            # mid-turn). One session with voice on is unambiguous: it's that
+            # one. Two or more, and we don't guess — global config decides.
+            live = [s["session_id"] for s in state.list_sessions()
+                    if s.get("enabled")]
+            if len(live) == 1:
+                sid = live[0]
+                Handler.active_session = sid
+                log(f"adopted lone enabled session -> {sid[:12]}")
+        kind = body.get("kind", "progress")
+        source = body.get("source", "tool")
+        eff = state.resolve(sid)
+        block = None if source == "cli" else presence.check(eff)
+        rt = sp.runtime(Handler.active_session, set(Handler.seen_ids), block)
+        text, issues = voice.lint(body.get("text", ""),
+                                  int(eff["max_utterance_chars"]))
+        d = policy.decide(kind, text, sid, eff, rt,
+                          request_id=body.get("request_id", ""), source=source)
+        Handler.counters[d.reason] += 1
+        if body.get("request_id"):
+            Handler.seen_ids.append(body["request_id"])
+        if not d.accept:
+            record({"event": "suppressed", "reason": d.reason, "kind": kind,
+                    "text": text[:200], "session": sid[:12]})
+            self._json(200, {"spoken": False, "reason": d.reason, "issues": issues})
+            return
+        sp.enqueue(text, kind, sid, d.priority, d.coalesce, source,
+                   created=body.get("created"), voice=body.get("voice"),
+                   issues=issues)
+        self._json(200, {"spoken": True, "reason": d.reason, "issues": issues,
+                         "text": text})
+
+    def _handle_close(self, body: dict, sid: str):
+        """End of turn. Only speak if Claude never used its own voice."""
+        sp = self.speaker
+        eff = state.resolve(sid)
+        if not eff["enabled"]:
+            self._json(200, {"spoken": False, "reason": "voice-off"})
+            return
+        block = presence.check(eff)
+        if block:
+            Handler.counters[block] += 1
+            self._json(200, {"spoken": False, "reason": block})
+            return
+        if sid and Handler.active_session and sid != Handler.active_session:
+            self._json(200, {"spoken": False, "reason": "inactive-session"})
+            return
+        closed = sp.closed_this_turn.get(sid, False)
+        mode = eff["fallback"]
+        if closed and mode != "full":
+            Handler.counters["close-already-spoke"] += 1
+            self._json(200, {"spoken": False, "reason": "already-spoke"})
+            return
+        if mode == "off":
+            Handler.counters["close-off"] += 1
+            self._json(200, {"spoken": False, "reason": "fallback-off"})
+            return
+        text = voice.speechify(body.get("text", ""), int(eff["max_chars"]),
+                               lead_only=(mode == "lead"))
+        if not text:
+            self._json(200, {"spoken": False, "reason": "empty"})
+            return
+        Handler.counters["close-fallback"] += 1
+        log(f"fallback-{mode} sid={sid[:12]}: {text[:60]!r}")
+        sp.enqueue(text, "done", sid, policy.PRIORITY["done"], False, source="fallback")
+        self._json(200, {"spoken": True, "reason": f"fallback-{mode}"})
 
     def log_message(self, *a):
         pass
 
 
 def main():
-    cfg = load_config()
-    port = int(cfg.get("port", 7865))
-    speaker = Speaker(cfg)
+    cfg = state.load_config()
+    port = int(cfg["port"])
+    speaker = Speaker()
     Handler.speaker = speaker
-    Handler.seen_ids = deque(maxlen=64)
-    PID_PATH.write_text(str(os.getpid()))
+    Handler.seen_ids = deque(maxlen=256)
     signal.signal(signal.SIGTERM, lambda *a: sys.exit(0))
-    log(f"speakd starting on 127.0.0.1:{port} engine={cfg['engine']}")
     try:
         server = ThreadingHTTPServer(("127.0.0.1", port), Handler)
     except OSError:
-        log(f"port {port} already in use — another speakd is running, exiting")
+        log(f"port {port} in use — another speakd owns it, exiting")
         return
-    # Warm engine in background so first /speak is fast but startup isn't blocked
-    threading.Thread(target=lambda: _safe_warm(speaker), daemon=True).start()
+    home = state.home()
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "speakd.pid").write_text(str(os.getpid()))
+    state.prune_sessions()
+    log(f"speakd up on 127.0.0.1:{port} engine={cfg['engine']} enabled={cfg['enabled']}")
+    threading.Thread(target=lambda: _safe_warm(speaker, cfg), daemon=True).start()
     server.serve_forever()
 
 
-def _safe_warm(speaker):
+def _safe_warm(speaker: Speaker, cfg: dict):
     try:
-        speaker.ensure_engine()
+        speaker.ensure_engine(cfg)
     except Exception as e:
         log(f"warm load failed: {e}")
 
