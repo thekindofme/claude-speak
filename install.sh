@@ -4,6 +4,22 @@
 set -eu
 ROOT="$(cd "$(dirname "$0")" && pwd)"
 
+# 0. Python environment for the voice engine (Python 3.10-3.12; mlx-audio
+#    doesn't support newer versions yet). Uses uv if present.
+if [ ! -x "$ROOT/.venv/bin/python" ]; then
+  if command -v uv >/dev/null 2>&1; then
+    uv venv --quiet --python 3.12 "$ROOT/.venv"
+    uv pip install --quiet --python "$ROOT/.venv/bin/python" -r "$ROOT/requirements.txt"
+  else
+    PYV=""
+    for v in python3.12 python3.11 python3.10; do command -v $v >/dev/null 2>&1 && { PYV=$v; break; }; done
+    [ -n "$PYV" ] || { echo "Need Python 3.10-3.12 (or uv) for the voice engine" >&2; exit 1; }
+    "$PYV" -m venv "$ROOT/.venv"
+    "$ROOT/.venv/bin/pip" install --quiet -r "$ROOT/requirements.txt"
+  fi
+fi
+echo "Engine env $ROOT/.venv"
+
 # 1. CLI
 mkdir -p "$HOME/.local/bin"
 ln -sf "$ROOT/bin/speak" "$HOME/.local/bin/speak"

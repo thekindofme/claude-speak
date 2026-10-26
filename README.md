@@ -68,14 +68,20 @@ background sessions never do, and typing cuts off speech mid-word.
 
 ## Install
 
+Needs macOS on Apple Silicon, and [uv](https://docs.astral.sh/uv/) or Python
+3.10–3.12 for the voice engine. Clone somewhere with a short path (e.g.
+`~/code/claude-speak`): the bundled eSpeak library can't find its data when the
+install path is very long.
+
 ```sh
-./install.sh     # CLI, /speak skill, 5 hooks, MCP voice channel. Voice stays OFF.
+./install.sh     # engine env (.venv), CLI, /speak skill, 5 hooks, MCP voice channel. Voice stays OFF.
 speak say hi     # hear it
 speak doctor     # verify every moving part
 ./uninstall.sh   # clean removal (--purge also drops ~/.claude-speak)
 ```
 
-Restart Claude Code once after install so it picks up the MCP tool.
+Restart Claude Code once after install so it picks up the MCP tool. The first
+`speak say` downloads the Kokoro model (about 340 MB) from Hugging Face.
 
 ## Engine choice — evals, not vibes
 

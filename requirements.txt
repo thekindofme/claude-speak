@@ -1,0 +1,12 @@
+# Default engine: Kokoro-82M on Apple MLX (Apple Silicon).
+numpy
+soundfile
+mlx-audio
+misaki[en]
+# English model misaki needs; installed here because uv-created envs have no pip
+# for misaki to download it at runtime.
+en_core_web_sm @ https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.8.0/en_core_web_sm-3.8.0-py3-none-any.whl
+# Optional engines (set "engine" in ~/.claude-speak/config.json):
+#   kokoro-pytorch:  pip install kokoro
+#   piper:           pip install piper-tts
+#   macos-say:       no extra packages
